@@ -1,31 +1,8 @@
 """
 PUMA Marketplace Stock & Status Validation Automation
 Enterprise-grade Streamlit Application
-Version 3.2 — Auto-dependency installer
+Version 3.3 — Streamlit Cloud compatible
 """
-
-# ─────────────────────────────────────────────────────────────
-# AUTO-INSTALL MISSING DEPENDENCIES
-# Runs silently before anything else loads
-# ─────────────────────────────────────────────────────────────
-import subprocess, sys, importlib
-
-def _ensure(package: str, import_name: str = None):
-    """Install package if not already available."""
-    name = import_name or package
-    try:
-        importlib.import_module(name)
-    except ImportError:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", package, "--quiet"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-_ensure("openpyxl")
-_ensure("plotly")
-_ensure("xlsxwriter")
-_ensure("chardet")          # robust CSV encoding detection
 
 import streamlit as st
 import pandas as pd
@@ -35,6 +12,26 @@ import io
 import warnings
 from typing import Dict, List, Optional, Tuple, Any
 warnings.filterwarnings("ignore")
+
+# Safe optional imports
+try:
+    import openpyxl
+    OPENPYXL_OK = True
+except ImportError:
+    OPENPYXL_OK = False
+
+try:
+    import chardet
+    CHARDET_OK = True
+except ImportError:
+    CHARDET_OK = False
+
+try:
+    import plotly.express as px
+    PLOTLY_OK = True
+except ImportError:
+    PLOTLY_OK = False
+
 
 # ─────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -1370,9 +1367,9 @@ with tabs[1]:
         st.markdown("---")
 
         # Charts
-        try:
-            import plotly.express as px
-
+        if not PLOTLY_OK:
+            st.info("ℹ️ Add `plotly` to requirements.txt for charts.")
+        else:
             s_df = pd.DataFrame(results["status"]) if results["status"] else pd.DataFrame()
             k_df = pd.DataFrame(results["stock"])  if results["stock"]  else pd.DataFrame()
 
@@ -1420,9 +1417,6 @@ with tabs[1]:
                                       color_discrete_sequence=px.colors.qualitative.Vivid)
                         fig4.update_layout(showlegend=False, height=300)
                         st.plotly_chart(fig4, use_container_width=True)
-
-        except ImportError:
-            st.info("Install plotly for charts: pip install plotly")
 
 # ── TAB 2: STATUS RESULTS ─────────────────────────────────────
 with tabs[2]:
