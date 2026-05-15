@@ -1,7 +1,7 @@
 """
 PUMA Marketplace Stock & Status Validation Automation
 Enterprise-grade Streamlit Application
-Version 3.0
+Version 3.1 — CSV + Excel support
 """
 
 import streamlit as st
@@ -84,28 +84,69 @@ def log(msg: str):
     ts = datetime.now().strftime("%H:%M:%S")
     st.session_state.logs.append(f"[{ts}] {msg}")
 
+def _is_csv(f) -> bool:
+    """Detect CSV from filename extension."""
+    name = getattr(f, "name", "") or ""
+    return name.lower().endswith(".csv")
+
 def read_excel(f, sheet_name=0) -> Optional[pd.DataFrame]:
-    """Read an uploaded Excel file safely."""
+    """
+    Read an uploaded Excel OR CSV file safely.
+    Auto-detects format from file extension.
+    """
+    if f is None:
+        return None
     try:
-        df = pd.read_excel(f, sheet_name=sheet_name, dtype=str)
-        df.columns = df.columns.str.strip()
-        df = df.dropna(how="all")
-        return df
+        if _is_csv(f):
+            # Try common encodings for CSV
+            f.seek(0)
+            raw = f.read()
+            for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+                try:
+                    text = raw.decode(enc)
+                    df = pd.read_csv(io.StringIO(text), dtype=str, low_memory=False)
+                    df.columns = df.columns.str.strip()
+                    df = df.dropna(how="all")
+                    log(f"📄 CSV loaded ({enc}): {getattr(f,'name','')} → {len(df)} rows")
+                    return df
+                except UnicodeDecodeError:
+                    continue
+            log(f"⚠️  Could not decode CSV: {getattr(f,'name','')}")
+            return None
+        else:
+            f.seek(0)
+            df = pd.read_excel(f, sheet_name=sheet_name, dtype=str)
+            df.columns = df.columns.str.strip()
+            df = df.dropna(how="all")
+            return df
     except Exception as e:
         log(f"⚠️  Could not read {getattr(f,'name','file')}: {e}")
         return None
 
 def read_all_sheets(f) -> Dict[str, pd.DataFrame]:
-    """Read all sheets from an Excel file."""
+    """
+    Read all sheets from an Excel file.
+    If file is CSV, returns single sheet keyed by filename stem.
+    """
+    if f is None:
+        return {}
     try:
-        xl = pd.ExcelFile(f)
-        sheets = {}
-        for name in xl.sheet_names:
-            df = pd.read_excel(xl, sheet_name=name, dtype=str)
-            df.columns = df.columns.str.strip()
-            df = df.dropna(how="all")
-            sheets[name] = df
-        return sheets
+        if _is_csv(f):
+            df = read_excel(f)
+            if df is not None:
+                stem = getattr(f, "name", "Sheet1").rsplit(".", 1)[0]
+                return {stem: df}
+            return {}
+        else:
+            f.seek(0)
+            xl = pd.ExcelFile(f)
+            sheets = {}
+            for name in xl.sheet_names:
+                df = pd.read_excel(xl, sheet_name=name, dtype=str)
+                df.columns = df.columns.str.strip()
+                df = df.dropna(how="all")
+                sheets[name] = df
+            return sheets
     except Exception as e:
         log(f"⚠️  Could not read sheets: {e}")
         return {}
@@ -1067,7 +1108,7 @@ with st.sidebar:
 
 # ── MAIN AREA ────────────────────────────────────────────────
 st.title("🐾 PUMA Marketplace Stock & Status Validator")
-st.caption("Enterprise-grade validation automation | v3.0")
+st.caption("Enterprise-grade validation automation | v3.1 — Excel & CSV supported")
 
 tabs = st.tabs([
     "📁 Upload Files",
@@ -1083,8 +1124,7 @@ tabs = st.tabs([
 # ── TAB 0: UPLOAD ─────────────────────────────────────────────
 with tabs[0]:
     st.header("📁 File Uploads")
-    st.info("Upload all required files. Marketplace files are optional per region — "
-            "upload only what you have.")
+    st.info("Upload all required files. Both **Excel (.xlsx / .xls)** and **CSV (.csv)** formats are supported for all files **except ZeCom Tracker** (Excel only). Marketplace files are optional per region — upload only what you have.")
 
     # ── Core Files ────────────────────────────────────────────
     st.subheader("🗂️ Core Master Files")
@@ -1092,17 +1132,17 @@ with tabs[0]:
     with c1:
         uf_content = st.file_uploader(
             "📚 Content Master File",
-            type=["xlsx","xls"], key="content_file",
+            type=["xlsx","xls","csv"], key="content_file",
             help="Super master — Article No → EAN mapping")
     with c2:
         uf_zecom = st.file_uploader(
-            "📋 ZeCom Tracker",
+            "📋 ZeCom Tracker  ⚠️ Excel only",
             type=["xlsx","xls"], key="zecom_file",
-            help="Primary status source. Has sub-sheets per region + Lazada/Shopee/Zalora/TikTok columns")
+            help="Excel only (.xlsx/.xls). Has sub-sheets per region (SG/MY/PH) + Lazada/Shopee/Zalora/TikTok columns")
     with c3:
         uf_pm = st.file_uploader(
             "📊 Product Master Stock ('ALL')",
-            type=["xlsx","xls"], key="pm_file",
+            type=["xlsx","xls","csv"], key="pm_file",
             help="filename contains ALL. Final stock source of truth")
 
     st.markdown("---")
@@ -1113,17 +1153,17 @@ with tabs[0]:
     with o1:
         uf_override = st.file_uploader(
             "🎯 Special Override File",
-            type=["xlsx","xls"], key="override_file",
+            type=["xlsx","xls","csv"], key="override_file",
             help="Article No + Final Status — highest priority")
     with o2:
         uf_exclusion = st.file_uploader(
             "🚫 Exclusion File",
-            type=["xlsx","xls"], key="exclusion_file",
+            type=["xlsx","xls","csv"], key="exclusion_file",
             help="Force INACTIVE for specific articles")
     with o3:
         uf_hero = st.file_uploader(
             "🏆 Hero SKU File",
-            type=["xlsx","xls"], key="hero_file",
+            type=["xlsx","xls","csv"], key="hero_file",
             help="Article No + Marketplace + Region — keeps ACTIVE override")
 
     st.markdown("---")
@@ -1134,17 +1174,17 @@ with tabs[0]:
     with i1:
         uf_inv_sg = st.file_uploader(
             "📦 Inventory — SG",
-            type=["xlsx","xls"], key="inv_sg",
+            type=["xlsx","xls","csv"], key="inv_sg",
             help="Starts with: SG_PUMA SG B2C Inventory Rpt_New_")
     with i2:
         uf_inv_my = st.file_uploader(
             "📦 Inventory — MY",
-            type=["xlsx","xls"], key="inv_my",
+            type=["xlsx","xls","csv"], key="inv_my",
             help="Starts with: PUMA_MY_B2C_Channel_Inventory_")
     with i3:
         uf_inv_ph = st.file_uploader(
             "📦 Inventory — PH",
-            type=["xlsx","xls"], key="inv_ph",
+            type=["xlsx","xls","csv"], key="inv_ph",
             help="Starts with: Inventory_")
 
     st.markdown("---")
@@ -1160,13 +1200,13 @@ with tabs[0]:
                 with cols[ci]:
                     st.file_uploader(
                         f"Zalora {region} — STATUS (SellerStatusTemplate)",
-                        type=["xlsx","xls"],
+                        type=["xlsx","xls","csv"],
                         key=f"mp_{region}_Zalora_status")
                 ci += 1
                 with cols[ci]:
                     st.file_uploader(
                         f"Zalora {region} — STOCK (SellerStockTemplate)",
-                        type=["xlsx","xls"],
+                        type=["xlsx","xls","csv"],
                         key=f"mp_{region}_Zalora_stock")
             else:
                 label_hints = {
@@ -1177,7 +1217,7 @@ with tabs[0]:
                 with cols[ci]:
                     st.file_uploader(
                         f"{mp} {region} ({label_hints.get(mp,'')})",
-                        type=["xlsx","xls"],
+                        type=["xlsx","xls","csv"],
                         key=f"mp_{region}_{mp}")
             ci += 1
 
