@@ -1,8 +1,31 @@
 """
 PUMA Marketplace Stock & Status Validation Automation
 Enterprise-grade Streamlit Application
-Version 3.1 — CSV + Excel support
+Version 3.2 — Auto-dependency installer
 """
+
+# ─────────────────────────────────────────────────────────────
+# AUTO-INSTALL MISSING DEPENDENCIES
+# Runs silently before anything else loads
+# ─────────────────────────────────────────────────────────────
+import subprocess, sys, importlib
+
+def _ensure(package: str, import_name: str = None):
+    """Install package if not already available."""
+    name = import_name or package
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", package, "--quiet"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+_ensure("openpyxl")
+_ensure("plotly")
+_ensure("xlsxwriter")
+_ensure("chardet")          # robust CSV encoding detection
 
 import streamlit as st
 import pandas as pd
@@ -89,33 +112,50 @@ def _is_csv(f) -> bool:
     name = getattr(f, "name", "") or ""
     return name.lower().endswith(".csv")
 
+def _detect_encoding(raw: bytes) -> str:
+    """Detect encoding using chardet if available, else return utf-8."""
+    try:
+        import chardet
+        result = chardet.detect(raw[:10000])
+        return result.get("encoding") or "utf-8"
+    except ImportError:
+        return "utf-8"
+
 def read_excel(f, sheet_name=0) -> Optional[pd.DataFrame]:
     """
     Read an uploaded Excel OR CSV file safely.
-    Auto-detects format from file extension.
+    Explicitly uses openpyxl engine to avoid ImportError.
+    Tries multiple encodings for CSV files.
     """
     if f is None:
         return None
     try:
         if _is_csv(f):
-            # Try common encodings for CSV
             f.seek(0)
             raw = f.read()
-            for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+            detected = _detect_encoding(raw)
+            encodings = list(dict.fromkeys(
+                [detected, "utf-8", "utf-8-sig", "latin-1", "cp1252"]
+            ))
+            for enc in encodings:
                 try:
                     text = raw.decode(enc)
-                    df = pd.read_csv(io.StringIO(text), dtype=str, low_memory=False)
+                    df = pd.read_csv(
+                        io.StringIO(text), dtype=str,
+                        low_memory=False, on_bad_lines="skip",
+                    )
                     df.columns = df.columns.str.strip()
                     df = df.dropna(how="all")
-                    log(f"📄 CSV loaded ({enc}): {getattr(f,'name','')} → {len(df)} rows")
+                    log(f"📄 CSV ({enc}): {getattr(f,'name','')} → {len(df)} rows")
                     return df
-                except UnicodeDecodeError:
+                except (UnicodeDecodeError, pd.errors.ParserError):
                     continue
             log(f"⚠️  Could not decode CSV: {getattr(f,'name','')}")
             return None
         else:
             f.seek(0)
-            df = pd.read_excel(f, sheet_name=sheet_name, dtype=str)
+            df = pd.read_excel(f, sheet_name=sheet_name, dtype=str,
+                               engine="openpyxl")
             df.columns = df.columns.str.strip()
             df = df.dropna(how="all")
             return df
@@ -125,8 +165,8 @@ def read_excel(f, sheet_name=0) -> Optional[pd.DataFrame]:
 
 def read_all_sheets(f) -> Dict[str, pd.DataFrame]:
     """
-    Read all sheets from an Excel file.
-    If file is CSV, returns single sheet keyed by filename stem.
+    Read all sheets from an Excel file (openpyxl explicit).
+    If file is CSV, returns single-sheet dict keyed by filename stem.
     """
     if f is None:
         return {}
@@ -139,16 +179,17 @@ def read_all_sheets(f) -> Dict[str, pd.DataFrame]:
             return {}
         else:
             f.seek(0)
-            xl = pd.ExcelFile(f)
+            xl = pd.ExcelFile(f, engine="openpyxl")
             sheets = {}
             for name in xl.sheet_names:
-                df = pd.read_excel(xl, sheet_name=name, dtype=str)
+                df = pd.read_excel(xl, sheet_name=name, dtype=str,
+                                   engine="openpyxl")
                 df.columns = df.columns.str.strip()
                 df = df.dropna(how="all")
                 sheets[name] = df
             return sheets
     except Exception as e:
-        log(f"⚠️  Could not read sheets: {e}")
+        log(f"⚠️  Could not read sheets from {getattr(f,'name','file')}: {e}")
         return {}
 
 def find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
